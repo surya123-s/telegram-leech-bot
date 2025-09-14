@@ -1,0 +1,63 @@
+name: Deploy to Windows VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest   # local runner for action execution (we'll SCP to Windows server)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare files to copy
+        run: |
+          zip -r deploy-package.zip . -x ".git/*" "node_modules/*" ".github/*" "*.zip"
+
+      # Use secrets: VPS_HOST, VPS_USER, VPS_SSH_KEY (private key), VPS_PORT(optional, default 22)
+      - name: Copy files to VPS
+        uses: appleboy/scp-action@v0.1.6
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          source: "deploy-package.zip"
+          target: ${{ secrets.VPS_TARGET_DIR }}  # e.g. C:\deploy\incoming or a Unix-like path if using OpenSSH
+
+      - name: Deploy on Windows (unzip, pip install, restart service)
+        uses: appleboy/ssh-action@v0.1.8
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            powershell -Command "Set-Location -Path $env:USERPROFILE"
+            # Ensure target dir exists
+            mkdir '${{ secrets.VPS_TARGET_DIR }}' -Force
+            # Unzip into install dir
+            powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory('$(pwd)/deploy-package.zip','${{ secrets.VPS_TARGET_DIR }}', $true)"
+            # Move files into final bot dir if needed
+            $install = '${{ secrets.VPS_INSTALL_DIR }}'  # e.g. C:\telegram-leech-bot
+            mkdir $install -Force
+            robocopy '${{ secrets.VPS_TARGET_DIR }}' $install /MIR
+            # Ensure python & pip installed already (install.ps1 can be used beforehand)
+            # Install python deps and yt-dlp
+            powershell -Command "python -m pip install --upgrade pip; python -m pip install -r $install\requirements.txt; python -m pip install yt-dlp"
+            # Set environment variables (system) from GitHub secrets (will require Admin)
+            $botToken = '${{ secrets.BOT_TOKEN }}'
+            $allowed = '${{ secrets.ALLOWED_USERS }}'
+            if ($botToken) {
+                setx BOT_TOKEN $botToken /M
+            }
+            if ($allowed) {
+                setx ALLOWED_USERS $allowed /M
+            }
+            setx MAX_CONCURRENT_DOWNLOADS "2" /M
+            setx MAX_FILE_SIZE_BYTES "2147483648" /M
+            # Run the register_service.ps1 to (re)install and start the service
+            powershell -ExecutionPolicy Bypass -File "$install\register_service.ps1" -InstallDir $install
+            # Done
