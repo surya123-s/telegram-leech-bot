@@ -1,0 +1,11 @@
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# pyrogram session files (if any)
+session/
+
+# secrets
+.env
